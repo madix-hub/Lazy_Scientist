@@ -350,16 +350,19 @@
         
         #urlList {
             width: 100%;
-            min-height: 200px;
-            padding: 16px;
+            height: 80px;
+            min-height: 80px;
+            max-height: 200px;
+            padding: 12px;
             border: 2px solid #e0e0e0;
             border-radius: 8px;
             font-family: 'Courier New', monospace;
-            font-size: 13px;
-            line-height: 1.8;
+            font-size: 12px;
+            line-height: 1.6;
             resize: vertical;
             background: #f9f9f9;
             color: #333;
+            overflow-y: auto;
         }
         
         #urlList:focus {
@@ -571,15 +574,6 @@
             <p>Searching for papers...</p>
         </div>
         
-        <div class="sort-controls" id="sortControls" style="display: none;">
-            <div class="sort-label">Sort by:</div>
-            <button class="sort-btn active" onclick="sortByRelevance()">Relevance</button>
-            <button class="sort-btn" onclick="sortByYear()">Year (Newest)</button>
-            <button class="sort-btn" onclick="sortByCitations()">Citations (Most)</button>
-        </div>
-        
-        <div class="results" id="results"></div>
-        
         <div class="url-list-section" id="urlListSection" style="display: none;">
             <div class="url-list-header">
                 <h3>URLs for NotebookLM</h3>
@@ -587,6 +581,20 @@
             </div>
             <textarea id="urlList" readonly></textarea>
         </div>
+        
+        <div class="sort-controls" id="sortControls" style="display: none;">
+            <div class="sort-label">Sort by:</div>
+            <button class="sort-btn active" onclick="sortByRelevance()">Relevance</button>
+            <button class="sort-btn" onclick="sortByYear()">Year (Newest)</button>
+            <button class="sort-btn" onclick="sortByCitations()">Citations (Most)</button>
+        </div>
+        
+        <div class="more-btn-container" id="moreBtnContainerTop" style="display: none;">
+            <button class="more-btn" id="moreBtnTop" onclick="loadMore()">Load More</button>
+            <p class="counter" id="counterTop"></p>
+        </div>
+        
+        <div class="results" id="results"></div>
         
         <div class="more-btn-container" id="moreBtnContainer">
             <button class="more-btn" id="moreBtn" onclick="loadMore()">Load More</button>
@@ -624,6 +632,7 @@
             allPapers = []; // Clear all stored papers
             document.getElementById('results').innerHTML = '';
             document.getElementById('moreBtnContainer').style.display = 'none';
+            document.getElementById('moreBtnContainerTop').style.display = 'none';
             
             await fetchPapers();
         }
@@ -650,6 +659,8 @@
             if (moreClickCount >= MAX_MORE_CLICKS) {
                 document.getElementById('moreBtn').disabled = true;
                 document.getElementById('moreBtn').textContent = 'Maximum Results Reached';
+                document.getElementById('moreBtnTop').disabled = true;
+                document.getElementById('moreBtnTop').textContent = 'Maximum Results Reached';
             }
         }
         
@@ -681,6 +692,7 @@
                     // Re-rank ALL papers and display them
                     rankAndDisplayAllPapers();
                     document.getElementById('moreBtnContainer').style.display = 'block';
+                    document.getElementById('moreBtnContainerTop').style.display = 'block';
                     updateCounter();
                 } else {
                     if (currentPage === 0) {
@@ -711,8 +723,15 @@
         // Add new papers to our collection (only if they have full-text links)
         function addPapersToCollection(papers) {
             papers.forEach(paper => {
-                // Get URL from CrossRef data
-                let downloadUrl = paper.URL; // DOI URL
+                // Skip if we already have this paper (check by DOI)
+                if (paper.DOI && allPapers.some(p => p.DOI === paper.DOI)) {
+                    return; // Skip duplicate
+                }
+                
+                // Get URL from CrossRef data - prioritize in this order:
+                // 1. Direct PDF link
+                // 2. DOI URL (always available and resolves to publisher page)
+                let downloadUrl = paper.URL; // DOI URL as fallback
                 
                 // Try to get direct PDF link if available
                 if (paper.link && paper.link.length > 0) {
@@ -722,6 +741,7 @@
                     }
                 }
                 
+                // Only add if we have a URL
                 if (downloadUrl) {
                     // Normalize the paper data structure
                     const normalizedPaper = {
@@ -732,7 +752,7 @@
                         citationCount: paper['is-referenced-by-count'] || 0,
                         publisher: paper.publisher || '',
                         journals: paper['container-title'] ? [{ title: paper['container-title'][0] }] : [],
-                        downloadUrl: downloadUrl,
+                        downloadUrl: downloadUrl, // Single URL per paper
                         DOI: paper.DOI
                     };
                     
@@ -997,6 +1017,7 @@
         }
         
         // Update the URL list for copying - always reflects current display order
+        // Each paper has exactly ONE URL (no duplicates)
         function updateUrlList() {
             const urlList = allPapers.map(paper => paper.downloadUrl).join('\n');
             document.getElementById('urlList').value = urlList;
@@ -1034,8 +1055,10 @@
             if (currentSort === 'year') sortText = 'year';
             if (currentSort === 'citations') sortText = 'citations';
             
-            document.getElementById('counter').textContent = 
-                `Showing ${totalPapers} papers (sorted by ${sortText}) | ${remaining} more loads available`;
+            const counterText = `Showing ${totalPapers} papers (sorted by ${sortText}) | ${remaining} more loads available`;
+            
+            document.getElementById('counter').textContent = counterText;
+            document.getElementById('counterTop').textContent = counterText;
         }
         
         function escapeHtml(text) {
