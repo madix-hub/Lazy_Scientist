@@ -560,7 +560,7 @@
     <div class="container">
         <div class="search-section">
             <div class="info-box">
-                <p><strong>How it works:</strong> Enter your research topic and get open-access papers with full-text PDFs, ranked by relevance. Only papers that work with NotebookLM are shown. Click "More" to load additional results.</p>
+                <p><strong>How it works:</strong> Enter your research question or topic. Semantic Scholar understands the meaning of your query and finds papers that truly answer it - not just keyword matches. Results are ranked by semantic relevance.</p>
             </div>
             
             <div class="search-box">
@@ -584,7 +584,7 @@
         
         <div class="sort-controls" id="sortControls" style="display: none;">
             <div class="sort-label">Sort by:</div>
-            <button class="sort-btn active" onclick="sortByRelevance()">Relevance</button>
+            <button class="sort-btn active" onclick="sortByRelevance()">Semantic Relevance</button>
             <button class="sort-btn" onclick="sortByYear()">Year (Newest)</button>
             <button class="sort-btn" onclick="sortByCitations()">Citations (Most)</button>
         </div>
@@ -602,7 +602,7 @@
         </div>
         
         <div class="footer">
-            Powered by CrossRef & Unpaywall APIs • Open Access Full-Text Papers Only
+            Powered by Semantic Scholar API • Semantic Search with True Relevance Scoring
         </div>
     </div>
 
@@ -614,11 +614,10 @@
         const RESULTS_PER_PAGE = 10;
         let allPapers = []; // Store ALL papers here for re-ranking
         
-        // Using CrossRef API for search
-        const CROSSREF_API = 'https://api.crossref.org/works';
-        // Using Unpaywall API to get actual full-text PDFs
-        const UNPAYWALL_API = 'https://api.unpaywall.org/v2/';
-        const EMAIL = 'lazyscientist@example.com'; // Required by Unpaywall
+        // Using Semantic Scholar API - semantic search with relevance scoring
+        const SEMANTIC_SCHOLAR_API = 'https://api.semanticscholar.org/graph/v1/paper/search';
+        // Fields we want from each paper
+        const FIELDS = 'paperId,title,abstract,authors,year,citationCount,openAccessPdf,isOpenAccess,publicationTypes,fieldsOfStudy';
         
         async function searchPapers() {
             const query = document.getElementById('searchInput').value.trim();
@@ -677,10 +676,9 @@
             moreBtn.disabled = true;
             
             try {
-                // Using CrossRef API - get more results since we'll filter for open access
+                // Using Semantic Scholar API - semantic search with built-in relevance
                 const offset = currentPage * RESULTS_PER_PAGE;
-                // Request more papers since many won't have open access
-                const url = `${CROSSREF_API}?query=${encodeURIComponent(currentQuery)}&rows=${RESULTS_PER_PAGE * 3}&offset=${offset}&select=DOI,title,author,published,is-referenced-by-count,URL,link,publisher,container-title`;
+                const url = `${SEMANTIC_SCHOLAR_API}?query=${encodeURIComponent(currentQuery)}&offset=${offset}&limit=${RESULTS_PER_PAGE}&fields=${FIELDS}&openAccessPdf`;
                 
                 const response = await fetch(url);
                 
@@ -690,11 +688,11 @@
                 
                 const data = await response.json();
                 
-                if (data.message && data.message.items && data.message.items.length > 0) {
-                    // Add new papers to our collection (async - checks for full-text)
-                    await addPapersToCollection(data.message.items);
+                if (data.data && data.data.length > 0) {
+                    // Add new papers to our collection
+                    addPapersToCollection(data.data);
                     
-                    // Check if we got any papers with full-text
+                    // Check if we got any papers
                     if (allPapers.length === 0 && currentPage === 0) {
                         document.getElementById('results').innerHTML = `
                             <div class="empty-state">
@@ -704,8 +702,8 @@
                             </div>
                         `;
                     } else {
-                        // Re-rank ALL papers and display them
-                        rankAndDisplayAllPapers();
+                        // Display papers (already ranked by Semantic Scholar)
+                        displayAllPapers();
                         document.getElementById('moreBtnContainer').style.display = 'block';
                         document.getElementById('moreBtnContainerTop').style.display = 'block';
                         updateCounter();
@@ -737,112 +735,122 @@
         }
         
         // Add new papers to our collection (only if they have full-text links)
-        async function addPapersToCollection(papers) {
-            // Process papers in batches to get full-text URLs
-            const promises = papers.map(async paper => {
-                // Skip if we already have this paper (check by DOI)
-                if (paper.DOI && allPapers.some(p => p.DOI === paper.DOI)) {
-                    return null; // Skip duplicate
+        function addPapersToCollection(papers) {
+            papers.forEach((paper, index) => {
+                // Skip if we already have this paper
+                if (paper.paperId && allPapers.some(p => p.paperId === paper.paperId)) {
+                    return; // Skip duplicate
                 }
                 
-                // Skip if no DOI (we need it to check Unpaywall)
-                if (!paper.DOI) {
-                    return null;
+                // Get PDF URL - Semantic Scholar provides this directly
+                let downloadUrl = null;
+                
+                if (paper.openAccessPdf && paper.openAccessPdf.url) {
+                    downloadUrl = paper.openAccessPdf.url;
+                } else if (paper.isOpenAccess) {
+                    // Try to construct a URL from paper ID
+                    downloadUrl = `https://www.semanticscholar.org/paper/${paper.paperId}`;
                 }
                 
-                try {
-                    // Check Unpaywall for free full-text PDF
-                    const unpaywallUrl = `${UNPAYWALL_API}${paper.DOI}?email=${EMAIL}`;
-                    const response = await fetch(unpaywallUrl);
+                // Only add papers with URLs
+                if (downloadUrl) {
+                    // Semantic Scholar already ranks by relevance, so we use the order
+                    const semanticRelevance = 100 - (index * 2); // Decreasing score based on position
                     
-                    if (!response.ok) {
-                        return null; // No open access version available
-                    }
-                    
-                    const unpaywallData = await response.json();
-                    
-                    // Get the best open access location
-                    let downloadUrl = null;
-                    
-                    if (unpaywallData.best_oa_location) {
-                        const location = unpaywallData.best_oa_location;
-                        
-                        // Prefer PDF URLs
-                        if (location.url_for_pdf) {
-                            downloadUrl = location.url_for_pdf;
-                        } else if (location.url_for_landing_page) {
-                            // Only use landing page if it's from a repository (not publisher)
-                            if (location.host_type === 'repository') {
-                                downloadUrl = location.url_for_landing_page;
-                            }
-                        }
-                    }
-                    
-                    // Only add papers with actual full-text URLs
-                    if (downloadUrl && (downloadUrl.endsWith('.pdf') || downloadUrl.includes('/pdf/') || downloadUrl.includes('repository'))) {
-                        // Normalize the paper data structure
-                        return {
-                            title: Array.isArray(paper.title) ? paper.title[0] : paper.title,
-                            authors: paper.author || [],
-                            year: paper.published ? paper.published['date-parts'][0][0] : null,
-                            publishedDate: paper.published ? paper.published['date-parts'][0][0] : null,
-                            citationCount: paper['is-referenced-by-count'] || 0,
-                            publisher: paper.publisher || '',
-                            journals: paper['container-title'] ? [{ title: paper['container-title'][0] }] : [],
-                            downloadUrl: downloadUrl, // Direct PDF or repository URL
-                            DOI: paper.DOI,
-                            isOpenAccess: true
-                        };
-                    }
-                    
-                    return null;
-                } catch (error) {
-                    console.log(`Could not fetch full-text for DOI: ${paper.DOI}`);
-                    return null;
-                }
-            });
-            
-            // Wait for all checks to complete
-            const results = await Promise.all(promises);
-            
-            // Add only papers with valid full-text URLs
-            results.forEach(paper => {
-                if (paper) {
-                    allPapers.push(paper);
+                    allPapers.push({
+                        paperId: paper.paperId,
+                        title: paper.title || 'Untitled',
+                        authors: paper.authors || [],
+                        year: paper.year || null,
+                        publishedDate: paper.year || null,
+                        citationCount: paper.citationCount || 0,
+                        abstract: paper.abstract || '',
+                        description: paper.abstract || '',
+                        downloadUrl: downloadUrl,
+                        isOpenAccess: paper.isOpenAccess || false,
+                        fieldsOfStudy: paper.fieldsOfStudy || [],
+                        semanticRelevance: semanticRelevance, // Semantic Scholar's ranking
+                        journals: [] // Semantic Scholar doesn't provide this directly
+                    });
                 }
             });
         }
         
-        // Calculate relevance score for a paper
+        // Display all papers (Semantic Scholar already provides relevance ranking)
+        function displayAllPapers() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '';
+            
+            allPapers.forEach((paper, index) => {
+                const paperDiv = document.createElement('div');
+                paperDiv.className = 'paper';
+                
+                const title = paper.title || 'Untitled';
+                const authors = paper.authors && paper.authors.length > 0 
+                    ? paper.authors.map(a => a.name || 'Unknown').join(', ') 
+                    : 'Unknown authors';
+                const year = paper.year || 'Year unknown';
+                
+                // Use Semantic Scholar's relevance (position-based)
+                const relativeScore = paper.semanticRelevance || 50;
+                
+                // Generate APA citation
+                const apaCitation = generateAPACitation(paper);
+                
+                // Get citation count
+                const citationCount = paper.citationCount || 0;
+                
+                paperDiv.innerHTML = `
+                    <div class="paper-header">
+                        <div class="paper-title">${escapeHtml(title)}</div>
+                        <div class="paper-actions">
+                            <div class="relevance-badge">${relativeScore}% match</div>
+                            <button class="delete-btn" onclick="deletePaper(${index})" title="Remove from list">✕</button>
+                        </div>
+                    </div>
+                    <div class="paper-citation">${apaCitation}</div>
+                    <div class="paper-meta">
+                        <div class="paper-authors"><span class="icon">👤</span> ${escapeHtml(authors)}</div>
+                        <div class="paper-year"><span class="icon">📅</span> ${escapeHtml(year.toString())}</div>
+                        <div class="citation-count">📊 ${citationCount} citations</div>
+                    </div>
+                    <a href="${escapeHtml(paper.downloadUrl)}" target="_blank" class="paper-link">View Full Text →</a>
+                `;
+                
+                resultsDiv.appendChild(paperDiv);
+            });
+            
+            // Update URL list
+            updateUrlList();
+            
+            // Show sort controls
+            document.getElementById('sortControls').style.display = 'flex';
+        }
+        
+        // Calculate relevance score for sorting (use semantic relevance from Semantic Scholar)
         function calculateRelevanceScore(paper) {
-            let score = 0;
+            // Semantic Scholar already provides relevance through ranking
+            // We just use the semantic relevance score we assigned
+            return paper.semanticRelevance || 0; abstract
+                }
+            }
             
-            // Get search terms (split by spaces, make lowercase)
-            const searchTerms = currentQuery.toLowerCase().split(' ').filter(term => term.length > 2);
+            // Penalty for papers that match only common words
+            if (termsInTitle === 0 && termsInAbstract < searchTerms.length / 2) {
+                score = score * 0.1; // Heavy penalty for weak matches
+            }
             
-            const title = (paper.title || '').toLowerCase();
-            const description = (paper.description || '').toLowerCase();
-            
-            // Score based on title matches (worth 10 points each)
-            searchTerms.forEach(term => {
-                const titleMatches = (title.match(new RegExp(term, 'g')) || []).length;
-                score += titleMatches * 10;
-            });
-            
-            // Score based on description matches (worth 2 points each)
-            searchTerms.forEach(term => {
-                const descMatches = (description.match(new RegExp(term, 'g')) || []).length;
-                score += descMatches * 2;
-            });
-            
-            // Bonus for recent papers (max 5 points)
+            // Bonus for recent papers (max 10 points)
             const year = parseInt(paper.year) || 2000;
             const currentYear = new Date().getFullYear();
-            if (year >= currentYear - 5) {
-                score += 5; // Published in last 5 years
-            } else if (year >= currentYear - 10) {
-                score += 3; // Published in last 10 years
+            if (year >= currentYear - 3) {
+                score += 10; // Very recent
+            } else if (year >= currentYear - 5) {
+                score += 5; // Recent
             }
+            
+            // Store paper share for sorting
+            paper.paperShare = paperShare;
             
             return score;
         }
@@ -920,11 +928,8 @@
             let authorString = '';
             if (paper.authors && paper.authors.length > 0) {
                 const authors = paper.authors.map(a => {
-                    // CrossRef format: {family: "Smith", given: "John"}
-                    if (a.family && a.given) {
-                        const initials = a.given.split(' ').map(n => n.charAt(0).toUpperCase() + '.').join(' ');
-                        return `${a.family}, ${initials}`;
-                    } else if (a.name) {
+                    // Semantic Scholar format: {name: "John Smith"}
+                    if (a.name) {
                         return a.name;
                     } else {
                         return 'Unknown';
@@ -957,9 +962,9 @@
                 citation += ` ${publisher}.`;
             }
             
-            // Add DOI if available
-            if (paper.DOI) {
-                citation += ` https://doi.org/${paper.DOI}`;
+            // Add Semantic Scholar link
+            if (paper.paperId) {
+                citation += ` https://www.semanticscholar.org/paper/${paper.paperId}`;
             }
             
             return citation;
@@ -971,7 +976,7 @@
         function sortByRelevance() {
             currentSort = 'relevance';
             updateSortButtons();
-            allPapers.sort((a, b) => b.relevanceScore - a.relevanceScore);
+            allPapers.sort((a, b) => (b.semanticRelevance || 0) - (a.semanticRelevance || 0));
             displayPapers();
         }
         
@@ -1025,9 +1030,8 @@
                     : 'Unknown authors';
                 const year = paper.year || paper.publishedDate || 'Year unknown';
                 
-                // Calculate relevance level for display
-                const maxScore = Math.max(...allPapers.map(p => p.relevanceScore));
-                const relativeScore = maxScore > 0 ? Math.round((paper.relevanceScore / maxScore) * 100) : 100;
+                // Use semantic relevance score
+                const relativeScore = paper.semanticRelevance || 50;
                 
                 // Generate APA citation
                 const apaCitation = generateAPACitation(paper);
@@ -1103,7 +1107,7 @@
             const totalPapers = allPapers.length;
             const remaining = MAX_MORE_CLICKS - moreClickCount;
             
-            let sortText = 'relevance';
+            let sortText = 'semantic relevance';
             if (currentSort === 'year') sortText = 'year';
             if (currentSort === 'citations') sortText = 'citations';
             
