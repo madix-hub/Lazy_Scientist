@@ -594,7 +594,7 @@
         </div>
         
         <div class="footer">
-            Powered by CORE API • Open Access Research
+            Powered by CrossRef API • Open Access Research
         </div>
     </div>
 
@@ -606,8 +606,8 @@
         const RESULTS_PER_PAGE = 10;
         let allPapers = []; // Store ALL papers here for re-ranking
         
-        // CORE API endpoint (no API key needed for basic use)
-        const CORE_API = 'https://core.ac.uk:443/api-v2/articles/search/';
+        // Using CrossRef API (free, no key required, more reliable)
+        const CROSSREF_API = 'https://api.crossref.org/works';
         
         async function searchPapers() {
             const query = document.getElementById('searchInput').value.trim();
@@ -663,8 +663,9 @@
             moreBtn.disabled = true;
             
             try {
-                // Using CORE API v2 (free, no key required) - enable citations
-                const url = `${CORE_API}${encodeURIComponent(currentQuery)}?page=${currentPage + 1}&pageSize=${RESULTS_PER_PAGE}&metadata=true&fulltext=true&citations=true&similar=false&duplicate=false&urls=true&faithfulMetadata=false&apiKey=demo`;
+                // Using CrossRef API - more reliable and no CORS issues
+                const offset = currentPage * RESULTS_PER_PAGE;
+                const url = `${CROSSREF_API}?query=${encodeURIComponent(currentQuery)}&rows=${RESULTS_PER_PAGE}&offset=${offset}&filter=has-full-text:true&select=DOI,title,author,published,is-referenced-by-count,URL,link,publisher`;
                 
                 const response = await fetch(url);
                 
@@ -674,9 +675,9 @@
                 
                 const data = await response.json();
                 
-                if (data.data && data.data.length > 0) {
+                if (data.message && data.message.items && data.message.items.length > 0) {
                     // Add new papers to our collection
-                    addPapersToCollection(data.data);
+                    addPapersToCollection(data.message.items);
                     // Re-rank ALL papers and display them
                     rankAndDisplayAllPapers();
                     document.getElementById('moreBtnContainer').style.display = 'block';
@@ -710,16 +711,32 @@
         // Add new papers to our collection (only if they have full-text links)
         function addPapersToCollection(papers) {
             papers.forEach(paper => {
-                const downloadUrl = paper.downloadUrl || 
-                                  (paper.repositories && paper.repositories.length > 0 ? paper.repositories[0].url : null) ||
-                                  (paper.urls && paper.urls.length > 0 ? paper.urls[0] : null);
+                // Get URL from CrossRef data
+                let downloadUrl = paper.URL; // DOI URL
+                
+                // Try to get direct PDF link if available
+                if (paper.link && paper.link.length > 0) {
+                    const pdfLink = paper.link.find(l => l['content-type'] === 'application/pdf');
+                    if (pdfLink) {
+                        downloadUrl = pdfLink.URL;
+                    }
+                }
                 
                 if (downloadUrl) {
-                    // Add the paper with its download URL
-                    allPapers.push({
-                        ...paper,
-                        downloadUrl: downloadUrl
-                    });
+                    // Normalize the paper data structure
+                    const normalizedPaper = {
+                        title: Array.isArray(paper.title) ? paper.title[0] : paper.title,
+                        authors: paper.author || [],
+                        year: paper.published ? paper.published['date-parts'][0][0] : null,
+                        publishedDate: paper.published ? paper.published['date-parts'][0][0] : null,
+                        citationCount: paper['is-referenced-by-count'] || 0,
+                        publisher: paper.publisher || '',
+                        journals: paper['container-title'] ? [{ title: paper['container-title'][0] }] : [],
+                        downloadUrl: downloadUrl,
+                        DOI: paper.DOI
+                    };
+                    
+                    allPapers.push(normalizedPaper);
                 }
             });
         }
@@ -778,7 +795,10 @@
                 
                 const title = paper.title || 'Untitled';
                 const authors = paper.authors && paper.authors.length > 0 
-                    ? paper.authors.map(a => a.name || a).join(', ') 
+                    ? paper.authors.map(a => {
+                        if (a.family && a.given) return `${a.given} ${a.family}`;
+                        return a.name || a;
+                    }).join(', ') 
                     : 'Unknown authors';
                 const year = paper.year || paper.publishedDate || 'Year unknown';
                 
@@ -828,15 +848,15 @@
             let authorString = '';
             if (paper.authors && paper.authors.length > 0) {
                 const authors = paper.authors.map(a => {
-                    const name = a.name || a;
-                    // Try to format as "Last, F." if possible
-                    const parts = name.trim().split(' ');
-                    if (parts.length > 1) {
-                        const lastName = parts[parts.length - 1];
-                        const initials = parts.slice(0, -1).map(p => p.charAt(0).toUpperCase() + '.').join(' ');
-                        return `${lastName}, ${initials}`;
+                    // CrossRef format: {family: "Smith", given: "John"}
+                    if (a.family && a.given) {
+                        const initials = a.given.split(' ').map(n => n.charAt(0).toUpperCase() + '.').join(' ');
+                        return `${a.family}, ${initials}`;
+                    } else if (a.name) {
+                        return a.name;
+                    } else {
+                        return 'Unknown';
                     }
-                    return name;
                 });
                 
                 if (authors.length === 1) {
@@ -863,6 +883,11 @@
                 citation += ` <em>${journal}</em>.`;
             } else if (publisher) {
                 citation += ` ${publisher}.`;
+            }
+            
+            // Add DOI if available
+            if (paper.DOI) {
+                citation += ` https://doi.org/${paper.DOI}`;
             }
             
             return citation;
@@ -921,7 +946,10 @@
                 
                 const title = paper.title || 'Untitled';
                 const authors = paper.authors && paper.authors.length > 0 
-                    ? paper.authors.map(a => a.name || a).join(', ') 
+                    ? paper.authors.map(a => {
+                        if (a.family && a.given) return `${a.given} ${a.family}`;
+                        return a.name || a;
+                    }).join(', ') 
                     : 'Unknown authors';
                 const year = paper.year || paper.publishedDate || 'Year unknown';
                 
