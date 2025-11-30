@@ -560,7 +560,7 @@
     <div class="container">
         <div class="search-section">
             <div class="info-box">
-                <p><strong>How it works:</strong> Enter your research topic and get 10 relevant open-access papers ranked by relevance. Click "More" up to 4 times to load additional results (max 50 papers).</p>
+                <p><strong>How it works:</strong> Enter your research topic and get open-access papers with full-text PDFs, ranked by relevance. Only papers that work with NotebookLM are shown. Click "More" to load additional results.</p>
             </div>
             
             <div class="search-box">
@@ -602,7 +602,7 @@
         </div>
         
         <div class="footer">
-            Powered by CrossRef API • Open Access Research
+            Powered by CrossRef & Unpaywall APIs • Open Access Full-Text Papers Only
         </div>
     </div>
 
@@ -614,8 +614,11 @@
         const RESULTS_PER_PAGE = 10;
         let allPapers = []; // Store ALL papers here for re-ranking
         
-        // Using CrossRef API (free, no key required, more reliable)
+        // Using CrossRef API for search
         const CROSSREF_API = 'https://api.crossref.org/works';
+        // Using Unpaywall API to get actual full-text PDFs
+        const UNPAYWALL_API = 'https://api.unpaywall.org/v2/';
+        const EMAIL = 'lazyscientist@example.com'; // Required by Unpaywall
         
         async function searchPapers() {
             const query = document.getElementById('searchInput').value.trim();
@@ -674,9 +677,10 @@
             moreBtn.disabled = true;
             
             try {
-                // Using CrossRef API - more reliable and no CORS issues
+                // Using CrossRef API - get more results since we'll filter for open access
                 const offset = currentPage * RESULTS_PER_PAGE;
-                const url = `${CROSSREF_API}?query=${encodeURIComponent(currentQuery)}&rows=${RESULTS_PER_PAGE}&offset=${offset}&filter=has-full-text:true&select=DOI,title,author,published,is-referenced-by-count,URL,link,publisher`;
+                // Request more papers since many won't have open access
+                const url = `${CROSSREF_API}?query=${encodeURIComponent(currentQuery)}&rows=${RESULTS_PER_PAGE * 3}&offset=${offset}&select=DOI,title,author,published,is-referenced-by-count,URL,link,publisher,container-title`;
                 
                 const response = await fetch(url);
                 
@@ -687,13 +691,25 @@
                 const data = await response.json();
                 
                 if (data.message && data.message.items && data.message.items.length > 0) {
-                    // Add new papers to our collection
-                    addPapersToCollection(data.message.items);
-                    // Re-rank ALL papers and display them
-                    rankAndDisplayAllPapers();
-                    document.getElementById('moreBtnContainer').style.display = 'block';
-                    document.getElementById('moreBtnContainerTop').style.display = 'block';
-                    updateCounter();
+                    // Add new papers to our collection (async - checks for full-text)
+                    await addPapersToCollection(data.message.items);
+                    
+                    // Check if we got any papers with full-text
+                    if (allPapers.length === 0 && currentPage === 0) {
+                        document.getElementById('results').innerHTML = `
+                            <div class="empty-state">
+                                <div class="empty-icon">🔍</div>
+                                <h3>No open access papers found</h3>
+                                <p>Try a different search term. We only show papers with free full-text access that work with NotebookLM.</p>
+                            </div>
+                        `;
+                    } else {
+                        // Re-rank ALL papers and display them
+                        rankAndDisplayAllPapers();
+                        document.getElementById('moreBtnContainer').style.display = 'block';
+                        document.getElementById('moreBtnContainerTop').style.display = 'block';
+                        updateCounter();
+                    }
                 } else {
                     if (currentPage === 0) {
                         document.getElementById('results').innerHTML = `
@@ -721,42 +737,78 @@
         }
         
         // Add new papers to our collection (only if they have full-text links)
-        function addPapersToCollection(papers) {
-            papers.forEach(paper => {
+        async function addPapersToCollection(papers) {
+            // Process papers in batches to get full-text URLs
+            const promises = papers.map(async paper => {
                 // Skip if we already have this paper (check by DOI)
                 if (paper.DOI && allPapers.some(p => p.DOI === paper.DOI)) {
-                    return; // Skip duplicate
+                    return null; // Skip duplicate
                 }
                 
-                // Get URL from CrossRef data - prioritize in this order:
-                // 1. Direct PDF link
-                // 2. DOI URL (always available and resolves to publisher page)
-                let downloadUrl = paper.URL; // DOI URL as fallback
-                
-                // Try to get direct PDF link if available
-                if (paper.link && paper.link.length > 0) {
-                    const pdfLink = paper.link.find(l => l['content-type'] === 'application/pdf');
-                    if (pdfLink) {
-                        downloadUrl = pdfLink.URL;
-                    }
+                // Skip if no DOI (we need it to check Unpaywall)
+                if (!paper.DOI) {
+                    return null;
                 }
                 
-                // Only add if we have a URL
-                if (downloadUrl) {
-                    // Normalize the paper data structure
-                    const normalizedPaper = {
-                        title: Array.isArray(paper.title) ? paper.title[0] : paper.title,
-                        authors: paper.author || [],
-                        year: paper.published ? paper.published['date-parts'][0][0] : null,
-                        publishedDate: paper.published ? paper.published['date-parts'][0][0] : null,
-                        citationCount: paper['is-referenced-by-count'] || 0,
-                        publisher: paper.publisher || '',
-                        journals: paper['container-title'] ? [{ title: paper['container-title'][0] }] : [],
-                        downloadUrl: downloadUrl, // Single URL per paper
-                        DOI: paper.DOI
-                    };
+                try {
+                    // Check Unpaywall for free full-text PDF
+                    const unpaywallUrl = `${UNPAYWALL_API}${paper.DOI}?email=${EMAIL}`;
+                    const response = await fetch(unpaywallUrl);
                     
-                    allPapers.push(normalizedPaper);
+                    if (!response.ok) {
+                        return null; // No open access version available
+                    }
+                    
+                    const unpaywallData = await response.json();
+                    
+                    // Get the best open access location
+                    let downloadUrl = null;
+                    
+                    if (unpaywallData.best_oa_location) {
+                        const location = unpaywallData.best_oa_location;
+                        
+                        // Prefer PDF URLs
+                        if (location.url_for_pdf) {
+                            downloadUrl = location.url_for_pdf;
+                        } else if (location.url_for_landing_page) {
+                            // Only use landing page if it's from a repository (not publisher)
+                            if (location.host_type === 'repository') {
+                                downloadUrl = location.url_for_landing_page;
+                            }
+                        }
+                    }
+                    
+                    // Only add papers with actual full-text URLs
+                    if (downloadUrl && (downloadUrl.endsWith('.pdf') || downloadUrl.includes('/pdf/') || downloadUrl.includes('repository'))) {
+                        // Normalize the paper data structure
+                        return {
+                            title: Array.isArray(paper.title) ? paper.title[0] : paper.title,
+                            authors: paper.author || [],
+                            year: paper.published ? paper.published['date-parts'][0][0] : null,
+                            publishedDate: paper.published ? paper.published['date-parts'][0][0] : null,
+                            citationCount: paper['is-referenced-by-count'] || 0,
+                            publisher: paper.publisher || '',
+                            journals: paper['container-title'] ? [{ title: paper['container-title'][0] }] : [],
+                            downloadUrl: downloadUrl, // Direct PDF or repository URL
+                            DOI: paper.DOI,
+                            isOpenAccess: true
+                        };
+                    }
+                    
+                    return null;
+                } catch (error) {
+                    console.log(`Could not fetch full-text for DOI: ${paper.DOI}`);
+                    return null;
+                }
+            });
+            
+            // Wait for all checks to complete
+            const results = await Promise.all(promises);
+            
+            // Add only papers with valid full-text URLs
+            results.forEach(paper => {
+                if (paper) {
+                    allPapers.push(paper);
                 }
             });
         }
